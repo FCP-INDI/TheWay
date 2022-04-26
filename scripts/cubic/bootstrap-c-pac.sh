@@ -1,6 +1,12 @@
 ## NOTE ##
 # This workflow is derived from the Datalad Handbook
 
+# In addition to the positional arguments described in https://pennlinc.github.io/docs/TheWay/RunningDataLadPipelines/#preparing-the-analysis-dataset ,
+# this bootstrap script also takes a /full/path/to/callback.log i.e.,
+# `bash bootstrap-c-pac.sh /full/path/to/BIDS /full/path/to/cpac-container /full/path/to/callback.log`
+# for optimizing memory (see https://fcp-indi.github.io/docs/nightly/user/tutorials/observed_usage for C-PAC optimization tutorial, and see
+# sections marked "C-PAC-specific memory optimization" in this script for details).
+
 ## Ensure the environment is ready to bootstrap the analysis workspace
 # Check that we have conda installed
 #conda activate
@@ -23,7 +29,7 @@ set -e -u
 
 
 ## Set up the directory that will contain the necessary directories
-PROJECTROOT=${PWD}/c-pac-1.8.3
+PROJECTROOT=${PWD}/c-pac-1.8.4
 if [[ -d ${PROJECTROOT} ]]
 then
     echo ${PROJECTROOT} already exists
@@ -37,7 +43,11 @@ then
 fi
 
 
-## Check the BIDS input
+# C-PAC-specific memory optimization
+CALLBACK_LOG=$3
+# ----------------------------------
+
+
 BIDSINPUT=$1
 if [[ -z ${BIDSINPUT} ]]
 then
@@ -109,6 +119,14 @@ fi
 cd ${PROJECTROOT}/analysis
 datalad install -d . --source ${PROJECTROOT}/pennlinc-containers
 
+
+# C-PAC-specific memory optimization ---------
+if [[ ! -z "${CALLBACK_LOG}" ]]; then
+    ln $CALLBACK_LOG code/runtime_callback.log
+fi
+# --------------------------------------------
+
+
 ## the actual compute job specification
 cat > code/participant_job.sh << "EOT"
 #!/bin/bash
@@ -173,16 +191,31 @@ datalad get -n "inputs/data/${subid}"
 # ------------------------------------------------------------------------------
 # Do the run!
 
-datalad run \
-    -i code/c-pac_zip.sh \
-    -i code/RBC_pipeline.yml \
-    -i inputs/data/${subid} \
-    -i inputs/data/*json \
-    -i pennlinc-containers/.datalad/environments/cpac-1-8-3/image \
-    --explicit \
-    -o ${subid}_c-pac-1.8.3.zip \
-    -m "C-PAC:1.8.3 ${subid}" \
-    "bash ./code/c-pac_zip.sh ${subid}"
+# C-PAC-specific memory optimization --------------------------------
+if [[ -f code/runtime_callback.log ]]
+then
+  datalad run \
+      -i code/c-pac_zip.sh \
+      -i code/runtime_callback.log \
+      -i inputs/data/${subid} \
+      -i inputs/data/*json \
+      -i pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      --explicit \
+      -o ${subid}_c-pac-1.8.4.zip \
+      -m "C-PAC:1.8.4-dev ${subid}" \
+      "bash ./code/c-pac_zip.sh ${subid}"
+# -------------------------------------------------------------------
+else
+  datalad run \
+      -i code/c-pac_zip.sh \
+      -i inputs/data/${subid} \
+      -i inputs/data/*json \
+      -i pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      --explicit \
+      -o ${subid}_c-pac-1.8.4.zip \
+      -m "C-PAC:1.8.4-dev ${subid}" \
+      "bash ./code/c-pac_zip.sh ${subid}"
+fi
 
 # file content first -- does not need a lock, no interaction with Git
 datalad push --to output-storage
@@ -210,20 +243,40 @@ set -e -u -x
 
 subid="$1"
 mkdir -p ${subid}_outputs
-singularity run --cleanenv \
-    -B ${PWD} \
-    -B ${PWD}/${subid}_outputs:/outputs \
-    pennlinc-containers/.datalad/environments/cpac-1-8-3/image \
-    inputs/data \
-    /outputs \
-    participant \
-    --preconfig rbc-options \
-    --skip_bids_validator \
-    --n_cpus 4 \
-    --mem_gb 32 \
-    --participant_label "$subid"
+# C-PAC-specific memory optimization -----------------------------
+if [[ -f code/runtime_callback.log ]]
+then
+  singularity run --cleanenv \
+      -B ${PWD} \
+      -B ${PWD}/${subid}_outputs:/outputs \
+      pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      inputs/data \
+      /outputs \
+      participant \
+      --preconfig rbc-options \
+      --skip_bids_validator \
+      --n_cpus 4 \
+      --mem_gb 32 \
+      --participant_label "$subid" \
+      --runtime_usage=code/runtime_callback.log \
+      --runtime_buffer=30
+# ----------------------------------------------------------------
+else
+  singularity run --cleanenv \
+      -B ${PWD} \
+      -B ${PWD}/${subid}_outputs:/outputs \
+      pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      inputs/data \
+      /outputs \
+      participant \
+      --preconfig rbc-options \
+      --skip_bids_validator \
+      --n_cpus 4 \
+      --mem_gb 32 \
+      --participant_label "$subid"
+fi
 
-7z a ${subid}_c-pac-1.8.3.zip ${subid}_outputs
+7z a ${subid}_c-pac-1.8.4.zip ${subid}_outputs
 rm -rf ${subid}_outputs
 
 EOT
