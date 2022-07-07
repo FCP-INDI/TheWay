@@ -29,7 +29,7 @@ set -e -u
 
 
 ## Set up the directory that will contain the necessary directories
-PROJECTROOT=${PWD}/c-pac-1.8.4
+PROJECTROOT=${PWD}/c-pac-1.8.5
 if [[ -d ${PROJECTROOT} ]]
 then
     echo ${PROJECTROOT} already exists
@@ -199,10 +199,10 @@ then
       -i code/runtime_callback.log \
       -i inputs/data/${subid} \
       -i inputs/data/*json \
-      -i pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      -i pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
       --explicit \
-      -o ${subid}_c-pac-1.8.4.zip \
-      -m "C-PAC:1.8.4-dev ${subid}" \
+      -o ${subid}_c-pac-1.8.5.zip \
+      -m "C-PAC:1.8.5-dev ${subid}" \
       "bash ./code/c-pac_zip.sh ${subid}"
 # -------------------------------------------------------------------
 else
@@ -210,10 +210,10 @@ else
       -i code/c-pac_zip.sh \
       -i inputs/data/${subid} \
       -i inputs/data/*json \
-      -i pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      -i pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
       --explicit \
-      -o ${subid}_c-pac-1.8.4.zip \
-      -m "C-PAC:1.8.4-dev ${subid}" \
+      -o ${subid}_c-pac-1.8.5.zip \
+      -m "C-PAC:1.8.5-dev ${subid}" \
       "bash ./code/c-pac_zip.sh ${subid}"
 fi
 
@@ -249,7 +249,7 @@ then
   singularity run --cleanenv \
       -B ${PWD} \
       -B ${PWD}/${subid}_outputs:/outputs \
-      pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
       inputs/data \
       /outputs \
       participant \
@@ -265,7 +265,7 @@ else
   singularity run --cleanenv \
       -B ${PWD} \
       -B ${PWD}/${subid}_outputs:/outputs \
-      pennlinc-containers/.datalad/environments/cpac-1-8-4/image \
+      pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
       inputs/data \
       /outputs \
       participant \
@@ -276,7 +276,7 @@ else
       --participant_label "$subid"
 fi
 
-7z a ${subid}_c-pac-1.8.4.zip ${subid}_outputs
+7z a ${subid}_c-pac-1.8.5.zip ${subid}_outputs
 rm -rf ${subid}_outputs
 
 EOT
