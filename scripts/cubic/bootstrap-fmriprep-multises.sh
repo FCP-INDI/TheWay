@@ -1,12 +1,6 @@
 ## NOTE ##
 # This workflow is derived from the Datalad Handbook
 
-# In addition to the positional arguments described in https://pennlinc.github.io/docs/TheWay/RunningDataLadPipelines/#preparing-the-analysis-dataset ,
-# this bootstrap script also takes a /full/path/to/callback.log i.e.,
-# `bash bootstrap-c-pac.sh /full/path/to/BIDS /full/path/to/cpac-container /full/path/to/callback.log`
-# for optimizing memory (see https://fcp-indi.github.io/docs/nightly/user/tutorials/observed_usage for C-PAC optimization tutorial, and see
-# sections marked "C-PAC-specific memory optimization" in this script for details).
-
 ## Ensure the environment is ready to bootstrap the analysis workspace
 # Check that we have conda installed
 #conda activate
@@ -29,7 +23,7 @@ set -e -u
 
 
 ## Set up the directory that will contain the necessary directories
-PROJECTROOT=${PWD}/c-pac-1.8.5
+PROJECTROOT=${PWD}/fmriprep-multises
 if [[ -d ${PROJECTROOT} ]]
 then
     echo ${PROJECTROOT} already exists
@@ -41,11 +35,6 @@ then
     echo Unable to write to ${PROJECTROOT}\'s parent. Change permissions and retry
     # exit 1
 fi
-
-
-# C-PAC-specific memory optimization
-CALLBACK_LOG=$3
-# ----------------------------------
 
 
 ## Check the BIDS input
@@ -137,20 +126,12 @@ fi
 cd ${PROJECTROOT}/analysis
 datalad install -d . --source ${PROJECTROOT}/pennlinc-containers
 
-
-# C-PAC-specific memory optimization ---------
-if [[ ! -z "${CALLBACK_LOG}" ]]; then
-    ln $CALLBACK_LOG code/runtime_callback.log
-fi
-# --------------------------------------------
-
-
 ## the actual compute job specification
 cat > code/participant_job.sh << "EOT"
 #!/bin/bash
 #$ -S /bin/bash
-#$ -l h_vmem=32G
-#$ -l s_vmem=32G
+#$ -l h_vmem=25G
+#$ -l s_vmem=23.5G
 #$ -l tmpfree=200G
 # Set up the correct conda environment
 source ${CONDA_PREFIX}/bin/activate base
@@ -210,38 +191,22 @@ datalad get -n "inputs/data/${subid}"
 # ------------------------------------------------------------------------------
 # Do the run!
 
-# C-PAC-specific memory optimization --------------------------------
-if [[ -f code/runtime_callback.log ]]
-then
-  datalad run \
-      -i code/c-pac_zip.sh \
-      -i code/runtime_callback.log \
-      -i inputs/data/${subid}/${sesid} \
-      -i inputs/data/*json \
-      -i pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      --explicit \
-      -o ${subid}_${sesid}_c-pac-1.8.5.zip \
-      -m "C-PAC:1.8.5 ${subid} ${sesid}" \
-      "bash ./code/c-pac_zip.sh ${subid} ${sesid}"
-# -------------------------------------------------------------------
-else
-  datalad run \
-      -i code/c-pac_zip.sh \
-      -i inputs/data/${subid} \
-      -i inputs/data/*json \
-      -i pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      --explicit \
-      -o ${subid}_${sesid}_c-pac-1.8.5.zip \
-      -m "C-PAC:1.8.5 ${subid}" \
-      "bash ./code/c-pac_zip.sh ${subid}"
-fi
+datalad run \
+    -i code/fmriprep_zip.sh \
+    -i inputs/data/${subid}/${sesid}\
+    -i inputs/data/*json \
+    -i pennlinc-containers/.datalad/environments/fmriprep-20-2-3/image \
+    --explicit \
+    -o ${subid}_${sesid}_fmriprep-20.2.3.zip \
+    -o ${subid}_${sesid}_freesurfer-20.2.3.zip \
+    -m "fmriprep:20.2.3 ${subid} ${sesid}" \
+    "bash ./code/fmriprep_zip.sh ${subid} ${sesid}"
 
 # file content first -- does not need a lock, no interaction with Git
 datalad push --to output-storage
 # and the output branch
 flock $DSLOCKFILE git push outputstore
 
-# remove tempdir
 echo TMPDIR TO DELETE
 echo ${BRANCH}
 
@@ -257,7 +222,7 @@ EOT
 
 chmod +x code/participant_job.sh
 
-cat > code/c-pac_zip.sh << "EOT"
+cat > code/fmriprep_zip.sh << "EOT"
 #!/bin/bash
 set -e -u -x
 
@@ -280,48 +245,33 @@ echo "}" >> ${filterfile}
 sed -i "s/'/\"/g" ${filterfile}
 sed -i "s/ses-//g" ${filterfile}
 
-mkdir -p ${subid}_${sesid}_outputs
-# C-PAC-specific memory optimization -----------------------------
-if [[ -f code/runtime_callback.log ]]
-then
-  singularity run --cleanenv \
-      -B ${PWD} \
-      -B ${PWD}/${subid}_${sesid}_outputs:/outputs \
-      pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      inputs/data \
-      /outputs \
-      participant \
-      --preconfig rbc-options \
-      --skip_bids_validator \
-      --n_cpus 4 \
-      --mem_gb 32 \
-      --participant_label "$subid" \
-      --runtime_usage=code/runtime_callback.log \
-      --runtime_buffer=30
-# ----------------------------------------------------------------
-else
-  singularity run --cleanenv \
-      -B ${PWD} \
-      -B ${PWD}/${subid}_${sesid}_outputs:/outputs \
-      pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      inputs/data \
-      /outputs \
-      participant \
-      --preconfig rbc-options \
-      --skip_bids_validator \
-      --n_cpus 4 \
-      --mem_gb 32 \
-      --participant_label "$subid"
-fi
+mkdir -p ${PWD}/.git/tmp/wdir
+singularity run --cleanenv -B ${PWD} \
+    pennlinc-containers/.datalad/environments/fmriprep-20-2-3/image \
+    inputs/data \
+    prep \
+    participant \
+    -w ${PWD}/.git/tmp/wkdir \
+    --n_cpus 1 \
+    --stop-on-first-crash \
+    --fs-license-file code/license.txt \
+    --skip-bids-validation \
+    --bids-filter-file "${filterfile}" \
+    --output-spaces MNI152NLin6Asym:res-2 \
+    --participant-label "$subid" \
+    --force-bbr \
+    --cifti-output 91k -v -v
 
-rm -rf ${subid}_${sesid}_outputs/working
-7z a ${subid}_${sesid}_c-pac-1.8.5.zip ${subid}_${sesid}_outputs
-rm -rf ${subid}_${sesid}_outputs
+cd prep
+7z a ../${subid}_${sesid}_fmriprep-20.2.3.zip fmriprep
+7z a ../${subid}_${sesid}_freesurfer-20.2.3.zip freesurfer
+rm -rf prep .git/tmp/wkdir
 rm ${filterfile}
 
 EOT
 
-chmod +x code/c-pac_zip.sh
+chmod +x code/fmriprep_zip.sh
+cp ${FREESURFER_HOME}/license.txt code/license.txt
 
 mkdir logs
 echo .SGE_datalad_lock >> .gitignore
@@ -336,6 +286,7 @@ cat > code/merge_outputs.sh << "EOT"
 #!/bin/bash
 set -e -u -x
 EOT
+
 echo "outputsource=${output_store}#$(datalad -f '{infos[dataset][id]}' wtf -S dataset)" \
     >> code/merge_outputs.sh
 echo "cd ${PROJECTROOT}" >> code/merge_outputs.sh
@@ -379,7 +330,7 @@ do
     [[ ${num_branches} -lt ${endnum} ]] && endnum=${num_branches}
     branches=$(sed -n "${startnum},${endnum}p;$(expr ${endnum} + 1)q" code/has_results.txt)
     echo ${branches} > ${batch_file}
-    git merge -m "C-PAC results batch ${chunknum}/${num_chunks}" $(cat ${batch_file})
+    git merge -m "fmriprep results batch ${chunknum}/${num_chunks}" $(cat ${batch_file})
 
 done
 
@@ -408,6 +359,7 @@ EOT
 
 
 env_flags="-v DSLOCKFILE=${PWD}/.SGE_datalad_lock"
+
 echo '#!/bin/bash' > code/qsub_calls.sh
 dssource="${input_store}#$(datalad -f '{infos[dataset][id]}' wtf -S dataset)"
 pushgitremote=$(git remote get-url --push output)
@@ -415,7 +367,7 @@ eo_args="-e ${PWD}/logs -o ${PWD}/logs"
 for subject in ${SUBJECTS}; do
   SESSIONS=$(ls  inputs/data/$subject | grep ses- | cut -d '/' -f 1)
   for session in ${SESSIONS}; do
-    echo "qsub -cwd ${env_flags} -N c-pac_${subject}_${session} ${eo_args} \
+    echo "qsub -cwd ${env_flags} -N fp${subject}_${session} ${eo_args} \
     ${PWD}/code/participant_job.sh \
     ${dssource} ${pushgitremote} ${subject} ${session}" >> code/qsub_calls.sh
   done
@@ -433,6 +385,7 @@ if [ "${BIDS_INPUT_METHOD}" = "clone" ]
 then
     datalad uninstall -r --nocheck inputs/data
 fi
+
 
 # make sure the fully configured output dataset is available from the designated
 # store for initial cloning and pushing the results.

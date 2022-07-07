@@ -1,12 +1,6 @@
 ## NOTE ##
 # This workflow is derived from the Datalad Handbook
 
-# In addition to the positional arguments described in https://pennlinc.github.io/docs/TheWay/RunningDataLadPipelines/#preparing-the-analysis-dataset ,
-# this bootstrap script also takes a /full/path/to/callback.log i.e.,
-# `bash bootstrap-c-pac.sh /full/path/to/BIDS /full/path/to/cpac-container /full/path/to/callback.log`
-# for optimizing memory (see https://fcp-indi.github.io/docs/nightly/user/tutorials/observed_usage for C-PAC optimization tutorial, and see
-# sections marked "C-PAC-specific memory optimization" in this script for details).
-
 ## Ensure the environment is ready to bootstrap the analysis workspace
 # Check that we have conda installed
 #conda activate
@@ -19,7 +13,6 @@ DATALAD_VERSION=$(datalad --version)
 
 if [ $? -gt 0 ]; then
     echo "No datalad available in your conda environment."
-    echo "Try pip install datalad"
     # exit 1
 fi
 
@@ -29,7 +22,7 @@ set -e -u
 
 
 ## Set up the directory that will contain the necessary directories
-PROJECTROOT=${PWD}/c-pac-1.8.5
+PROJECTROOT=${PWD}/aslprep
 if [[ -d ${PROJECTROOT} ]]
 then
     echo ${PROJECTROOT} already exists
@@ -41,11 +34,6 @@ then
     echo Unable to write to ${PROJECTROOT}\'s parent. Change permissions and retry
     # exit 1
 fi
-
-
-# C-PAC-specific memory optimization
-CALLBACK_LOG=$3
-# ----------------------------------
 
 
 ## Check the BIDS input
@@ -119,71 +107,44 @@ CONTAINERDS=$2
 if [[ ! -z "${CONTAINERDS}" ]]; then
     datalad clone ${CONTAINERDS} pennlinc-containers
 else
-    echo "No containers dataset specified, attempting to clone from pmacs"
-    datalad clone \
-        ria+ssh://sciget.pmacs.upenn.edu:/project/bbl_projects/containers#~pennlinc-containers \
-        pennlinc-containers
-    cd pennlinc-containers
-    datalad get -r .
-    # get rid of the references to pmacs
-    set +e
-    datalad siblings remove -s pmacs-ria-storage
-    git annex dead pmacs-ria-storage
-    datalad siblings remove -s origin
-    git annex dead origin
-    set -e
+    echo ERROR: requires a container dataset
+    exit 1
 fi
 
 cd ${PROJECTROOT}/analysis
 datalad install -d . --source ${PROJECTROOT}/pennlinc-containers
-
-
-# C-PAC-specific memory optimization ---------
-if [[ ! -z "${CALLBACK_LOG}" ]]; then
-    ln $CALLBACK_LOG code/runtime_callback.log
-fi
-# --------------------------------------------
-
 
 ## the actual compute job specification
 cat > code/participant_job.sh << "EOT"
 #!/bin/bash
 #$ -S /bin/bash
 #$ -l h_vmem=32G
-#$ -l s_vmem=32G
 #$ -l tmpfree=200G
+#$ -pe threaded 6
 # Set up the correct conda environment
 source ${CONDA_PREFIX}/bin/activate base
 echo I\'m in $PWD using `which python`
-
 # fail whenever something is fishy, use -x to get verbose logfiles
 set -e -u -x
-
 # Set up the remotes and get the subject id from the call
 dssource="$1"
 pushgitremote="$2"
 subid="$3"
-sesid="$4"
-
 # change into the cluster-assigned temp directory. Not done by default in SGE
 cd ${CBICA_TMPDIR}
 # OR Run it on a shared network drive
 # cd /cbica/comp_space/$(basename $HOME)
-
 # Used for the branch names and the temp dir
-BRANCH="job-${JOB_ID}-${subid}-${sesid}"
+BRANCH="job-${JOB_ID}-${subid}"
 mkdir ${BRANCH}
 cd ${BRANCH}
-
 # get the analysis dataset, which includes the inputs as well
 # importantly, we do not clone from the lcoation that we want to push the
 # results to, in order to avoid too many jobs blocking access to
 # the same location and creating a throughput bottleneck
 datalad clone "${dssource}" ds
-
 # all following actions are performed in the context of the superdataset
 cd ds
-
 # in order to avoid accumulation temporary git-annex availability information
 # and to avoid a syncronization bottleneck by having to consolidate the
 # git-annex branch across jobs, we will only push the main tracking branch
@@ -193,135 +154,70 @@ cd ds
 # and we want to avoid progressive slowdown. Instead we only ever push
 # a unique branch per each job (subject AND process specific name)
 git remote add outputstore "$pushgitremote"
-
 # all results of this job will be put into a dedicated branch
 git checkout -b "${BRANCH}"
-
 # we pull down the input subject manually in order to discover relevant
 # files. We do this outside the recorded call, because on a potential
 # re-run we want to be able to do fine-grained recomputing of individual
 # outputs. The recorded calls will have specific paths that will enable
 # recomputation outside the scope of the original setup
 datalad get -n "inputs/data/${subid}"
-
 # Reomve all subjects we're not working on
 (cd inputs/data && rm -rf `find . -type d -name 'sub*' | grep -v $subid`)
-
 # ------------------------------------------------------------------------------
 # Do the run!
-
-# C-PAC-specific memory optimization --------------------------------
-if [[ -f code/runtime_callback.log ]]
-then
-  datalad run \
-      -i code/c-pac_zip.sh \
-      -i code/runtime_callback.log \
-      -i inputs/data/${subid}/${sesid} \
-      -i inputs/data/*json \
-      -i pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      --explicit \
-      -o ${subid}_${sesid}_c-pac-1.8.5.zip \
-      -m "C-PAC:1.8.5 ${subid} ${sesid}" \
-      "bash ./code/c-pac_zip.sh ${subid} ${sesid}"
-# -------------------------------------------------------------------
-else
-  datalad run \
-      -i code/c-pac_zip.sh \
-      -i inputs/data/${subid} \
-      -i inputs/data/*json \
-      -i pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      --explicit \
-      -o ${subid}_${sesid}_c-pac-1.8.5.zip \
-      -m "C-PAC:1.8.5 ${subid}" \
-      "bash ./code/c-pac_zip.sh ${subid}"
-fi
-
+datalad run \
+    -i code/aslprep_zip.sh \
+    -i inputs/data/${subid} \
+    -i inputs/data/*json \
+    -i pennlinc-containers/.datalad/environments/aslprep-0-2-7/image \
+    --explicit \
+    -o ${subid}_aslprep-0.2.7.zip \
+    -m "aslprep:0.2.7 ${subid}" \
+    "bash ./code/aslprep_zip.sh ${subid}"
 # file content first -- does not need a lock, no interaction with Git
 datalad push --to output-storage
 # and the output branch
 flock $DSLOCKFILE git push outputstore
-
 # remove tempdir
 echo TMPDIR TO DELETE
 echo ${BRANCH}
-
 datalad uninstall -r --nocheck --if-dirty ignore inputs/data
 datalad drop -r . --nocheck
 git annex dead here
 cd ../..
 rm -rf $BRANCH
-
 echo SUCCESS
 # job handler should clean up workspace
 EOT
 
 chmod +x code/participant_job.sh
 
-cat > code/c-pac_zip.sh << "EOT"
+cat > code/aslprep_zip.sh << "EOT"
 #!/bin/bash
 set -e -u -x
-
 subid="$1"
-sesid="$2"
-
-# Create a filter file that only allows this session
-filterfile=${PWD}/${sesid}_filter.json
-echo "{" > ${filterfile}
-echo "'fmap': {'datatype': 'fmap'}," >> ${filterfile}
-echo "'bold': {'datatype': 'func', 'session': '$sesid', 'suffix': 'bold'}," >> ${filterfile}
-echo "'sbref': {'datatype': 'func', 'session': '$sesid', 'suffix': 'sbref'}," >> ${filterfile}
-echo "'flair': {'datatype': 'anat', 'session': '$sesid', 'suffix': 'FLAIR'}," >> ${filterfile}
-echo "'t2w': {'datatype': 'anat', 'session': '$sesid', 'suffix': 'T2w'}," >> ${filterfile}
-echo "'t1w': {'datatype': 'anat', 'session': '$sesid', 'suffix': 'T1w'}," >> ${filterfile}
-echo "'roi': {'datatype': 'anat', 'session': '$sesid', 'suffix': 'roi'}" >> ${filterfile}
-echo "}" >> ${filterfile}
-
-# remove ses and get valid json
-sed -i "s/'/\"/g" ${filterfile}
-sed -i "s/ses-//g" ${filterfile}
-
-mkdir -p ${subid}_${sesid}_outputs
-# C-PAC-specific memory optimization -----------------------------
-if [[ -f code/runtime_callback.log ]]
-then
-  singularity run --cleanenv \
-      -B ${PWD} \
-      -B ${PWD}/${subid}_${sesid}_outputs:/outputs \
-      pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      inputs/data \
-      /outputs \
-      participant \
-      --preconfig rbc-options \
-      --skip_bids_validator \
-      --n_cpus 4 \
-      --mem_gb 32 \
-      --participant_label "$subid" \
-      --runtime_usage=code/runtime_callback.log \
-      --runtime_buffer=30
-# ----------------------------------------------------------------
-else
-  singularity run --cleanenv \
-      -B ${PWD} \
-      -B ${PWD}/${subid}_${sesid}_outputs:/outputs \
-      pennlinc-containers/.datalad/environments/cpac-1-8-5/image \
-      inputs/data \
-      /outputs \
-      participant \
-      --preconfig rbc-options \
-      --skip_bids_validator \
-      --n_cpus 4 \
-      --mem_gb 32 \
-      --participant_label "$subid"
-fi
-
-rm -rf ${subid}_${sesid}_outputs/working
-7z a ${subid}_${sesid}_c-pac-1.8.5.zip ${subid}_${sesid}_outputs
-rm -rf ${subid}_${sesid}_outputs
-rm ${filterfile}
-
+mkdir -p ${PWD}/.git/tmp/wdir
+singularity run --cleanenv -B ${PWD} \
+    pennlinc-containers/.datalad/environments/aslprep-0-2-7/image \
+    inputs/data \
+    prep \
+    participant \
+    -w ${PWD}/.git/tmp/wkdir \
+    --n_cpus $NSLOTS \
+    --stop-on-first-crash \
+    --skip-bids-validation \
+    --fs-license-file code/license.txt \
+    --output-spaces MNI152NLin6Asym:res-2 \
+    --participant-label "$subid" \
+    --force-bbr -v -v
+cd prep
+7z a ../${subid}_aslprep-0.2.7.zip aslprep
+rm -rf prep .git/tmp/wkdir
 EOT
 
-chmod +x code/c-pac_zip.sh
+chmod +x code/aslprep_zip.sh
+cp ${FREESURFER_HOME}/license.txt code/license.txt
 
 mkdir logs
 echo .SGE_datalad_lock >> .gitignore
@@ -329,96 +225,30 @@ echo logs >> .gitignore
 
 datalad save -m "Participant compute job implementation"
 
-################################################################################
-# SGE SETUP START - remove or adjust to your needs
-################################################################################
 cat > code/merge_outputs.sh << "EOT"
 #!/bin/bash
 set -e -u -x
 EOT
+
+# Add a script for merging outputs
+MERGE_POSTSCRIPT=https://raw.githubusercontent.com/PennLINC/TheWay/main/scripts/cubic/merge_outputs_postscript.sh
 echo "outputsource=${output_store}#$(datalad -f '{infos[dataset][id]}' wtf -S dataset)" \
     >> code/merge_outputs.sh
 echo "cd ${PROJECTROOT}" >> code/merge_outputs.sh
+wget -qO- ${MERGE_POSTSCRIPT} >> code/merge_outputs.sh
 
-cat >> code/merge_outputs.sh << "EOT"
-
-datalad clone ${outputsource} merge_ds
-cd merge_ds
-NBRANCHES=$(git branch -a | grep job- | sort | wc -l)
-echo "Found $NBRANCHES branches to merge"
-
-gitref=$(git show-ref master | cut -d ' ' -f1 | head -n 1)
-
-# query all branches for the most recent commit and check if it is identical.
-# Write all branch identifiers for jobs without outputs into a file.
-for i in $(git branch -a | grep job- | sort); do [ x"$(git show-ref $i \
-  | cut -d ' ' -f1)" = x"${gitref}" ] && \
-  echo $i; done | tee code/noresults.txt | wc -l
-
-
-for i in $(git branch -a | grep job- | sort); \
-  do [ x"$(git show-ref $i  \
-     | cut -d ' ' -f1)" != x"${gitref}" ] && \
-     echo $i; \
-done | tee code/has_results.txt
-
-mkdir -p code/merge_batches
-num_branches=$(wc -l < code/has_results.txt)
-CHUNKSIZE=5000
-set +e
-num_chunks=$(expr ${num_branches} / ${CHUNKSIZE})
-if [[ $num_chunks == 0 ]]; then
-    num_chunks=1
-fi
-set -e
-for chunknum in $(seq 1 $num_chunks)
-do
-    startnum=$(expr $(expr ${chunknum} - 1) \* ${CHUNKSIZE} + 1)
-    endnum=$(expr ${chunknum} \* ${CHUNKSIZE})
-    batch_file=code/merge_branches_$(printf %04d ${chunknum}).txt
-    [[ ${num_branches} -lt ${endnum} ]] && endnum=${num_branches}
-    branches=$(sed -n "${startnum},${endnum}p;$(expr ${endnum} + 1)q" code/has_results.txt)
-    echo ${branches} > ${batch_file}
-    git merge -m "C-PAC results batch ${chunknum}/${num_chunks}" $(cat ${batch_file})
-
-done
-
-# Push the merge back
-git push
-
-# Get the file availability info
-git annex fsck --fast -f output-storage
-
-# This should not print anything
-MISSING=$(git annex find --not --in output-storage)
-
-if [[ ! -z "$MISSING" ]]
-then
-    echo Unable to find data for $MISSING
-    exit 1
-fi
-
-# stop tracking this branch
-git annex dead here
-
-datalad push --data nothing
-echo SUCCESS
-
-EOT
-
-
+################################################################################
+# SGE SETUP START - remove or adjust to your needs
+################################################################################
 env_flags="-v DSLOCKFILE=${PWD}/.SGE_datalad_lock"
 echo '#!/bin/bash' > code/qsub_calls.sh
 dssource="${input_store}#$(datalad -f '{infos[dataset][id]}' wtf -S dataset)"
 pushgitremote=$(git remote get-url --push output)
 eo_args="-e ${PWD}/logs -o ${PWD}/logs"
 for subject in ${SUBJECTS}; do
-  SESSIONS=$(ls  inputs/data/$subject | grep ses- | cut -d '/' -f 1)
-  for session in ${SESSIONS}; do
-    echo "qsub -cwd ${env_flags} -N c-pac_${subject}_${session} ${eo_args} \
+    echo "qsub -cwd ${env_flags} -N qp${subject} ${eo_args} \
     ${PWD}/code/participant_job.sh \
-    ${dssource} ${pushgitremote} ${subject} ${session}" >> code/qsub_calls.sh
-  done
+    ${dssource} ${pushgitremote} ${subject}" >> code/qsub_calls.sh
 done
 datalad save -m "SGE submission setup" code/ .gitignore
 
@@ -433,6 +263,7 @@ if [ "${BIDS_INPUT_METHOD}" = "clone" ]
 then
     datalad uninstall -r --nocheck inputs/data
 fi
+
 
 # make sure the fully configured output dataset is available from the designated
 # store for initial cloning and pushing the results.
